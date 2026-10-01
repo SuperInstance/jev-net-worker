@@ -38,7 +38,7 @@ const BASE = {
       persona: 'You are the skeptic cell: a devil\'s advocate. Attack the weakest joint and name the failure mode precisely.' },
     builder: { role: 'layer', accepts: ['mechanism', 'constraint', 'entity', 'anchor'], threshold: 0.15,
       persona: 'You are the builder cell: turn mechanisms and constraints into an actual answer sketch — what to do, in what order.' },
-    synth: { role: 'synth', accepts: [], threshold: 0.0, persona: 'Weaver of contributions into one answer.' },
+    synth: { role: 'synth', accepts: TYPES, threshold: 0.0, persona: 'Weaver of contributions into one answer.' },
   },
   edges: [
     { from: 'input', to: 'mechanism', accepts: ['sub-question', 'constraint', 'anchor'], weight: 0.8, n_updates: 0 },
@@ -47,6 +47,7 @@ const BASE = {
     { from: 'mechanism', to: 'builder', accepts: ['mechanism', 'constraint'], weight: 0.75, n_updates: 0 },
     { from: 'skeptic', to: 'builder', accepts: ['counter', 'risk', 'claim'], weight: 0.7, n_updates: 0 },
     { from: 'builder', to: 'skeptic', accepts: ['claim', 'mechanism'], weight: 0.5, n_updates: 0 },
+    { from: 'builder', to: 'synth', accepts: ['claim', 'mechanism'], weight: 0.9, n_updates: 0 },
   ],
 };
 
@@ -260,9 +261,32 @@ async function forward(env, prompt, maxHops = 2) {
     if (!pending.length) break;
   }
 
-  // synth
+  // synth — WAVE-65 TOURNAMENT PARITY: prism-projected contributions (edges
+  // into synth are learnable), not a flat bundle. Port of jev-net forward.py.
+  const synth = net.cells.synth;
   const reached = trace.cells.filter(p => p.hop >= 1);
-  const contrib = reached.map(p => `[${p.cell} @hop${p.hop} conf=${p.judgment.confidence.toFixed(2)}] verdict: ${p.verdict.summary.slice(0, 300)}\n  parts: ${p.extractions.map(e => `(${e.type}) ${e.content.slice(0, 160)}`).join('; ').slice(0, 700)}`).join('\n\n');
+  const synthIn = [];
+  for (const p of reached) {
+    // project p along p.cell's out-edges into synth
+    const delivered = [];
+    for (const e of p.extractions) {
+      for (const edge of net.edges) {
+        if (edge.from !== p.cell || edge.to !== 'synth') continue;
+        if (!edge.accepts.includes(e.type) || !(synth.accepts || TYPES).includes(e.type)) continue;
+        delivered.push({ ...e, salience_eff: clamp01(e.salience) * p.judgment.confidence * edge.weight });
+      }
+    }
+    if (delivered.length) synthIn.push({ p, delivered });
+  }
+  let contrib;
+  if (synthIn.length) {
+    contrib = synthIn
+      .sort((a, b) => b.delivered.reduce((s, e) => s + e.salience_eff, 0) - a.delivered.reduce((s, e) => s + e.salience_eff, 0))
+      .map(({ p, delivered }) => `[${p.cell} @hop${p.hop} conf=${p.judgment.confidence.toFixed(2)} act=${delivered.reduce((s, e) => s + e.salience_eff, 0).toFixed(2)}] ${p.verdict.summary.slice(0, 260)}\n  parts: ${delivered.map(e => `(${e.type}) ${e.content.slice(0, 140)}`).join('; ').slice(0, 640)}`)
+      .join('\n\n');
+  } else {
+    contrib = reached.map(p => `[${p.cell} @hop${p.hop} conf=${p.judgment.confidence.toFixed(2)}] verdict: ${p.verdict.summary.slice(0, 300)}\n  parts: ${p.extractions.map(e => `(${e.type}) ${e.content.slice(0, 160)}`).join('; ').slice(0, 700)}`).join('\n\n');
+  }
   let answer = null;
   const sy = await callCell(env, 'synth', BASE.cells.synth.persona,
     `ORIGINAL PROMPT:\n${prompt}\n\nCELL CONTRIBUTIONS:\n${contrib || '(none)'}\n\nWeave into ONE answer. Cite cells like [mechanism]. Surface tensions instead of averaging them away.`, 1100);
