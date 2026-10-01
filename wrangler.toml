@@ -1,0 +1,21 @@
+name = "jev-net-worker"
+main = "src/worker.js"
+compatibility_date = "2024-11-01"
+
+# D1 ledger: weights (the learned delta), passes (JEV transcripts), learn_log.
+[[d1_databases]]
+binding = "DB"
+database_name = "jev-net-ledger"
+database_id = "98364d4c-75d5-4c76-8d3a-e384ff5e106d"
+
+# Workers AI binding: the cells run here — zero key egress.
+# Gotcha from wave-64 receipts: it is [ai], NOT [[ai]].
+[ai]
+binding = "AI"
+
+# The heartbeat: nightly self-play. The net learns while nobody calls it.
+[triggers]
+crons = ["30 7 * * *"]
+
+[observability]
+enabled = true
